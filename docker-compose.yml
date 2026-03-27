@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  lord-spyk3:
+    build: .
+    container_name: lord-spyk3-bot
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Phishing server
+      - "8081:8081"   # API
+      - "9090:9090"   # Metrics
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./nikto_results:/app/nikto_results
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - DATABASE_PATH=/app/data/spyk3.db
+      - CONFIG_PATH=/app/config.json
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=spyk3
+      - POSTGRES_USER=spyk3
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+    env_file:
+      - .env
+    networks:
+      - spyk3-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - apparmor:unconfined
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: spyk3-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-changeme}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - spyk3-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: spyk3-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=spyk3
+      - POSTGRES_USER=spyk3
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spyk3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - spyk3-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: spyk3-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - spyk3-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: spyk3-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/spyk3.json
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - spyk3-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: spyk3-nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - lord-spyk3
+    networks:
+      - spyk3-network
+
+networks:
+  spyk3-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
