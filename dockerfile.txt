@@ -1,0 +1,75 @@
+# Multi-stage build for LORD-SPYK3-BOT-V7
+FROM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    libffi-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    libpcap-dev \
+    tcpdump \
+    nikto \
+    nmap \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy requirements and install Python packages
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# Final stage
+FROM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpcap0.8 \
+    tcpdump \
+    nikto \
+    nmap \
+    iputils-ping \
+    net-tools \
+    curl \
+    procps \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r spyk3 && useradd -r -g spyk3 -m -s /bin/bash spyk3 && \
+    echo "spyk3 ALL=(ALL) NOPASSWD: /usr/sbin/iptables, /usr/sbin/tcpdump" >> /etc/sudoers
+
+WORKDIR /app
+
+# Copy Python packages from builder
+COPY --from=builder /root/.local /home/spyk3/.local
+ENV PATH=/home/spyk3/.local/bin:$PATH
+
+# Copy application files
+COPY --chown=spyk3:spyk3 . .
+
+# Create directories
+RUN mkdir -p /app/data /app/logs /app/reports /app/nikto_results && \
+    chown -R spyk3:spyk3 /app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import socket; socket.create_connection(('localhost', 8080), timeout=5).close()" || exit 1
+
+# Switch to non-root user
+USER spyk3
+
+# Expose ports
+EXPOSE 8080 8081 9090
+
+# Entry point
+COPY scripts/entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["entrypoint.sh"]
+
+# Default command
+CMD ["python", "lord_spyk3_bot.py"]
